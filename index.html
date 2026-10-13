@@ -153,6 +153,24 @@ html[data-theme="dark"] .tab.active{background:var(--accent);color:#161513}
 .cat-pill .n{opacity:.65;font-size:12px;font-weight:500}
 .cat-pill.active .n{opacity:.85}
 
+/* ============ 筛选胶囊（场景 / 季节） ============ */
+.fpill{
+  padding:6px 14px;border-radius:99px;border:1px dashed var(--line-strong);
+  background:transparent;font-size:13px;font-weight:600;color:var(--text-2);
+  white-space:nowrap;transition:.18s;cursor:pointer;font-family:inherit;
+}
+.fpill:hover{border-color:var(--accent);color:var(--text)}
+.fpill.on{
+  background:var(--accent-soft, rgba(181,115,79,.14));
+  border:1px solid var(--accent);color:var(--accent);font-weight:700;
+}
+.fpill.fclear{
+  border-style:solid;border-color:transparent;background:transparent;
+  color:var(--text-3);font-weight:500;
+}
+.fpill.fclear:hover{color:var(--danger,#c0392b)}
+.scene-chip{background:rgba(181,115,79,.12);color:var(--accent);font-weight:600}
+
 /* ============ 衣物网格 ============ */
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(178px,1fr));gap:16px}
 .card{
@@ -535,11 +553,6 @@ html[data-theme="dark"] .tab.active{background:var(--accent);color:#161513}
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
         <input type="text" id="searchInput" placeholder="搜索名称、品牌、颜色、备注…">
       </div>
-      <select id="seasonFilter">
-        <option value="">全部季节</option>
-        <option value="春">春</option><option value="夏">夏</option>
-        <option value="秋">秋</option><option value="冬">冬</option>
-      </select>
       <select id="sortSelect">
         <option value="new">最近添加</option>
         <option value="old">最早添加</option>
@@ -552,6 +565,15 @@ html[data-theme="dark"] .tab.active{background:var(--accent);color:#161513}
     </div>
 
     <div class="cat-bar" id="catBar"></div>
+
+    <div class="scene-filter" id="sceneFilterBar" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;align-items:center">
+      <span style="font-size:12px;color:var(--muted);font-weight:600;margin-right:2px">场景</span>
+    </div>
+
+    <div class="scene-filter" id="seasonFilterBar" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;align-items:center">
+      <span style="font-size:12px;color:var(--muted);font-weight:600;margin-right:2px">季节</span>
+    </div>
+
     <div id="wardrobeContent"></div>
   </section>
 
@@ -686,6 +708,11 @@ html[data-theme="dark"] .tab.active{background:var(--accent);color:#161513}
           <div style="display:flex;gap:8px;flex-wrap:wrap" id="seasonBar"></div>
         </div>
 
+        <div class="field full">
+          <label>使用场景（可多选）</label>
+          <div style="display:flex;gap:8px;flex-wrap:wrap" id="sceneBar"></div>
+        </div>
+
         <div class="field">
           <label>价格（元）</label>
           <input type="number" id="fPrice" min="0" step="1" placeholder="0">
@@ -810,6 +837,15 @@ const CATEGORIES = [
   { id:'hat',      name:'帽子',   icon:'🧢', role:'hat' },
   { id:'accessory',name:'配饰',   icon:'👜', role:'accessory' },
 ];
+/* 场景标签：一件衣物可归属多个场景 */
+const SCENES = [
+  { id:'daily',  name:'日常',     icon:'🏠' },
+  { id:'sport',  name:'运动',     icon:'🏃' },
+  { id:'hike',   name:'户外徒步', icon:'🥾' },
+  { id:'badminton', name:'羽毛球', icon:'🏸' },
+];
+const SCENE_MAP = Object.fromEntries(SCENES.map(s=>[s.id, s]));
+
 const COLOR_PRESETS = [
   { name:'黑',   hex:'#2b2723', tone:'neutral' },
   { name:'白',   hex:'#f7f5f1', tone:'neutral' },
@@ -886,6 +922,7 @@ let editingId = null;
 let currentPickerImage = null;
 let detailId = null;
 let pendingSeasons = [];
+let pendingScenes = [];
 let currentColor = '#2b2723';
 
 /* ---------- 云端状态 ---------- */
@@ -912,6 +949,7 @@ function normalizeItem(it){
   if(typeof it.wears !== 'number') it.wears = 0;
   if(!Array.isArray(it.wearDates)) it.wearDates = [];
   if(!Array.isArray(it.seasons)) it.seasons = [];
+  if(!Array.isArray(it.scenes))  it.scenes  = [];
   if(!it.created) it.created = Date.now();
   return it;
 }
@@ -1181,6 +1219,7 @@ function toCloudRow(it, userId){
     cat: it.cat,
     color: it.color,
     seasons: it.seasons || [],
+    scenes: it.scenes || [],
     brand: it.brand || '',
     note: it.note || '',
     price: it.price || 0,
@@ -1200,6 +1239,7 @@ function fromCloudRow(r){
     cat: r.cat,
     color: r.color,
     seasons: r.seasons || [],
+    scenes: r.scenes || [],
     brand: r.brand || '',
     note: r.note || '',
     price: Number(r.price) || 0,
@@ -1232,6 +1272,17 @@ async function pullFromCloud(){
     // 2. 本地有、云端没有的 → 待上传（首次登录时这就是"本地数据迁移到云端"）
     const localOnly = items.filter(i=>!cloudIds.has(i.id));
     if(localOnly.length){
+      // 关键：先把本地图片上传到 Storage，否则另一台设备会拉到没有图片的行
+      for(const it of localOnly){
+        if(it.img && !it.imgUrl){
+          try{
+            const path = await uploadImage(it.img, it.id);
+            if(path){ it.imgUrl = path; it.img = null; }
+          }catch(e){
+            console.warn('图片上传失败，本条先按无图推送，稍后可手动补传', e);
+          }
+        }
+      }
       await pushMany(localOnly);
     }
 
@@ -1340,7 +1391,7 @@ async function flushPending(){
     }
   }
   savePending();
-  if(pendingOps.length === 0 && items.some(i=>i.img && !i.imgUrl)){
+  if(items.some(i=>i.imgUrl && !i.img)){
     await hydrateImages(items);
   }
   persistLocalOnly();
@@ -1628,15 +1679,66 @@ $$('.tab').forEach(t=>{
 /* =========================================================
    筛选状态
    ========================================================= */
-let filter = { cat:'', season:'', q:'', sort:'new' };
+let filter = { cat:'', seasons:[], scenes:[], q:'', sort:'new' };
 $('#searchInput').addEventListener('input', e=>{ filter.q = e.target.value.trim(); renderWardrobe(); });
-$('#seasonFilter').addEventListener('change', e=>{ filter.season = e.target.value; renderWardrobe(); });
 $('#sortSelect').addEventListener('change', e=>{ filter.sort = e.target.value; renderWardrobe(); });
+
+/* 筛选栏：点选胶囊（多选），再点一下取消 */
+function renderFilterBars(){
+  // 场景
+  const sBar = $('#sceneFilterBar');
+  sBar.querySelectorAll('.fpill').forEach(n=>n.remove());
+  SCENES.forEach(s=>{
+    const b = document.createElement('button');
+    b.className = 'fpill' + (filter.scenes.includes(s.id) ? ' on' : '');
+    b.textContent = s.icon + ' ' + s.name;
+    b.addEventListener('click', ()=>{
+      const i = filter.scenes.indexOf(s.id);
+      if(i >= 0) filter.scenes.splice(i,1); else filter.scenes.push(s.id);
+      renderWardrobe();
+    });
+    sBar.appendChild(b);
+  });
+  // 季节
+  const seaBar = $('#seasonFilterBar');
+  seaBar.querySelectorAll('.fpill').forEach(n=>n.remove());
+  SEASONS.forEach(s=>{
+    const b = document.createElement('button');
+    b.className = 'fpill' + (filter.seasons.includes(s) ? ' on' : '');
+    b.textContent = s;
+    b.addEventListener('click', ()=>{
+      const i = filter.seasons.indexOf(s);
+      if(i >= 0) filter.seasons.splice(i,1); else filter.seasons.push(s);
+      renderWardrobe();
+    });
+    seaBar.appendChild(b);
+  });
+  // 有任意筛选时，追加「清空」按钮
+  const hasAny = filter.seasons.length || filter.scenes.length;
+  [sBar, seaBar].forEach((bar, idx)=>{
+    bar.querySelectorAll('.fclear').forEach(n=>n.remove());
+    if(hasAny){
+      const c = document.createElement('button');
+      c.className = 'fpill fclear';
+      c.textContent = '✕ 清空';
+      c.addEventListener('click', ()=>{
+        filter.seasons = []; filter.scenes = [];
+        renderWardrobe();
+      });
+      bar.appendChild(c);
+    }
+  });
+}
 
 function filteredItems(){
   let list = items.slice();
   if(filter.cat)    list = list.filter(i=>i.cat === filter.cat);
-  if(filter.season) list = list.filter(i=>(i.seasons||[]).includes(filter.season));
+  // 季节：多选，命中任一即通过（AND 于其他维度）
+  if(filter.seasons.length)
+    list = list.filter(i=> (i.seasons||[]).some(s=>filter.seasons.includes(s)) );
+  // 场景：多选，命中任一即通过
+  if(filter.scenes.length)
+    list = list.filter(i=> (i.scenes||[]).some(s=>filter.scenes.includes(s)) );
   if(filter.q){
     const q = filter.q.toLowerCase();
     list = list.filter(i =>
@@ -1705,6 +1807,7 @@ function itemCardHtml(it){
         <span class="chip"><span class="dot" style="background:${ci.hex}"></span>${esc(ci.name)}</span>
         <span class="chip">${cat.icon} ${esc(cat.name)}</span>
         ${(it.seasons||[]).length ? `<span class="chip">${it.seasons.join('')}</span>` : ''}
+        ${(it.scenes||[]).map(sid=>{ const s=SCENE_MAP[sid]; return s?`<span class="chip scene-chip">${s.icon} ${esc(s.name)}</span>`:''; }).join('')}
       </div>
       ${it.brand ? `<div class="card-meta" style="font-size:11.5px">${esc(it.brand)}${it.price?` · ${fmtMoney(it.price)}`:''}</div>` : (it.price?`<div class="card-meta" style="font-size:11.5px">${fmtMoney(it.price)}</div>`:'')}
     </div>
@@ -1713,10 +1816,12 @@ function itemCardHtml(it){
 
 function renderWardrobe(){
   renderCatBar();
+  renderFilterBars();
   const list = filteredItems();
   const totalWears = items.reduce((s,i)=>s+(i.wears||0),0);
+  const hasFilter = filter.q || filter.cat || filter.seasons.length || filter.scenes.length;
   $('#wardrobeSub').textContent = items.length
-    ? `共 ${items.length} 件 · 累计穿着 ${totalWears} 次${filter.q||filter.cat||filter.season?' · 当前筛选出 '+list.length+' 件':''}`
+    ? `共 ${items.length} 件 · 累计穿着 ${totalWears} 次${hasFilter?' · 当前筛选出 '+list.length+' 件':''}`
     : '还没有衣物，点右上角开始添加吧';
 
   const box = $('#wardrobeContent');
@@ -1737,8 +1842,8 @@ function renderWardrobe(){
     box.innerHTML = `<div class="empty">${PH_SVG}<h3>没有符合条件的衣物</h3><p>换个筛选条件或清空搜索试试。</p>
       <button class="btn btn-ghost" id="resetFilter">重置筛选</button></div>`;
     $('#resetFilter').addEventListener('click', ()=>{
-      filter = {cat:'',season:'',q:'',sort:filter.sort};
-      $('#searchInput').value=''; $('#seasonFilter').value='';
+      filter = {cat:'',seasons:[],scenes:[],q:'',sort:filter.sort};
+      $('#searchInput').value='';
       renderWardrobe();
     });
     return;
@@ -1774,6 +1879,10 @@ function buildFormOptions(){
     `<label class="sel-opt" data-season="${s}" style="width:auto;padding:6px 13px">
        <span class="box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5L20 7"/></svg></span>${s}</label>`
   ).join('');
+  $('#sceneBar').innerHTML = SCENES.map(s=>
+    `<label class="sel-opt" data-scene="${s.id}" style="width:auto;padding:6px 13px">
+       <span class="box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5L20 7"/></svg></span>${s.icon} ${s.name}</label>`
+  ).join('');
 
   $('#colorBar').querySelectorAll('.color-swatch').forEach(sw=>{
     sw.addEventListener('click', ()=>{
@@ -1787,6 +1896,14 @@ function buildFormOptions(){
       const s = l.dataset.season;
       if(pendingSeasons.includes(s)) pendingSeasons = pendingSeasons.filter(x=>x!==s);
       else pendingSeasons.push(s);
+      l.classList.toggle('on');
+    });
+  });
+  $('#sceneBar').querySelectorAll('.sel-opt').forEach(l=>{
+    l.addEventListener('click', ()=>{
+      const s = l.dataset.scene;
+      if(pendingScenes.includes(s)) pendingScenes = pendingScenes.filter(x=>x!==s);
+      else pendingScenes.push(s);
       l.classList.toggle('on');
     });
   });
@@ -1816,6 +1933,10 @@ function openItemModal(id){
   pendingSeasons = it?.seasons ? it.seasons.slice() : [];
   $('#seasonBar').querySelectorAll('.sel-opt').forEach(l=>
     l.classList.toggle('on', pendingSeasons.includes(l.dataset.season))
+  );
+  pendingScenes = it?.scenes ? it.scenes.slice() : [];
+  $('#sceneBar').querySelectorAll('.sel-opt').forEach(l=>
+    l.classList.toggle('on', pendingScenes.includes(l.dataset.scene))
   );
   syncColorSel();
   currentPickerImage = it?.img || null;
@@ -1872,6 +1993,7 @@ function saveItem(){
     price:    isNaN(price) ? 0 : Math.max(0, price),
     buyDate:  $('#fDate').value,
     seasons:  pendingSeasons.slice(),
+    scenes:   pendingScenes.slice(),
     img:      currentPickerImage || null,
   };
   let targetId;
@@ -1924,6 +2046,7 @@ function openDetail(id){
         <div class="df"><span class="k">分类</span><span class="v">${cat.icon} ${esc(cat.name)}</span></div>
         <div class="df"><span class="k">颜色</span><span class="v"><span class="dot" style="display:inline-block;background:${ci.hex};vertical-align:-1px;margin-right:5px"></span>${esc(ci.name)}</span></div>
         <div class="df"><span class="k">季节</span><span class="v">${(it.seasons||[]).length ? it.seasons.join(' / ') : '未标注'}</span></div>
+        <div class="df"><span class="k">场景</span><span class="v">${(it.scenes||[]).length ? it.scenes.map(sid=>{const s=SCENE_MAP[sid];return s?s.icon+' '+s.name:''}).filter(Boolean).join(' / ') : '未标注'}</span></div>
         <div class="df"><span class="k">品牌</span><span class="v">${esc(it.brand) || '—'}</span></div>
         <div class="df"><span class="k">价格</span><span class="v">${it.price ? fmtMoney(it.price) : '—'}</span></div>
         <div class="df"><span class="k">购买日期</span><span class="v">${esc(it.buyDate) || '—'}</span></div>
@@ -2531,28 +2654,33 @@ $('#clearBtn').addEventListener('click', ()=>{
 function loadDemo(){
   if(items.length && !confirm('这会向衣橱中添加 15 件示例衣物（不会删除你已有的），继续吗？')) return;
   const demo = [
-    ['白色圆领 T 恤','top','#f7f5f1','UNIQLO',79,['春','夏'],'日常通勤基础款，尺码 M'],
-    ['浅蓝牛津纺衬衫','top','#4a7ba7','Muji',199,['春','秋'],'正式场合可穿，版型修身'],
-    ['黑色高领针织衫','top','#2b2723','COS',499,['秋','冬'],'搭配外套很好看'],
-    ['驼色羊毛大衣','outer','#c19a6b','MaxMara',2980,['秋','冬'],'正式场合穿，羊绒混纺'],
-    ['深蓝直筒牛仔裤','bottom','#2f4560','Levi\'s',599,['春','秋','冬'],'百搭，注意不要机洗'],
-    ['米白色阔腿裤','bottom','#e8dfd0','Zara',299,['春','夏','秋'],'垂感好，显腿长'],
-    ['灰色卫衣','top','#9c9a97','Nike',349,['春','秋'],'运动休闲，周末穿'],
-    ['白色小白鞋','shoes','#f7f5f1','Adidas',469,['春','夏','秋'],'日常百搭'],
-    ['黑色乐福鞋','shoes','#2b2723','Clarks',799,['春','秋'],'偏正式，配西裤好看'],
-    ['藏蓝连衣裙','dress','#2f4560','Zara',459,['夏'],'约会/聚会，收腰款'],
-    ['棕色皮质手提包','accessory','#7a5240','—',899,['春','夏','秋','冬'],'通勤用，容量大'],
-    ['米白色渔夫帽','hat','#e8dfd0','MUJI',169,['春','夏','秋'],'防晒，休闲感强'],
-    ['黑色棒球帽','hat','#2b2723','Nike',199,['春','夏','秋'],'运动或没洗头时救场'],
-    ['藏蓝针织毛线帽','hat','#2f4560','UNIQLO',129,['冬'],'冬天保暖，配大衣好看'],
-    ['驼色针织开衫','outer','#c19a6b','UNIQLO',249,['春','秋'],'薄外套，办公室常备'],
+    // [名称, 分类, 颜色, 品牌, 价格, 季节, 备注, 场景]
+    ['白色圆领 T 恤','top','#f7f5f1','UNIQLO',79,['春','夏'],'日常通勤基础款，尺码 M',['daily']],
+    ['浅蓝牛津纺衬衫','top','#4a7ba7','Muji',199,['春','秋'],'正式场合可穿，版型修身',['daily']],
+    ['黑色高领针织衫','top','#2b2723','COS',499,['秋','冬'],'搭配外套很好看',['daily']],
+    ['驼色羊毛大衣','outer','#c19a6b','MaxMara',2980,['秋','冬'],'正式场合穿，羊绒混纺',['daily']],
+    ['深蓝直筒牛仔裤','bottom','#2f4560','Levi\'s',599,['春','秋','冬'],'百搭，注意不要机洗',['daily','hike']],
+    ['米白色阔腿裤','bottom','#e8dfd0','Zara',299,['春','夏','秋'],'垂感好，显腿长',['daily']],
+    ['灰色卫衣','top','#9c9a97','Nike',349,['春','秋'],'运动休闲，周末穿',['sport','daily']],
+    ['白色小白鞋','shoes','#f7f5f1','Adidas',469,['春','夏','秋'],'日常百搭',['daily','sport']],
+    ['黑色乐福鞋','shoes','#2b2723','Clarks',799,['春','秋'],'偏正式，配西裤好看',['daily']],
+    ['藏蓝连衣裙','dress','#2f4560','Zara',459,['夏'],'约会/聚会，收腰款',['daily']],
+    ['棕色皮质手提包','accessory','#7a5240','—',899,['春','夏','秋','冬'],'通勤用，容量大',['daily']],
+    ['米白色渔夫帽','hat','#e8dfd0','MUJI',169,['春','夏','秋'],'防晒，休闲感强',['daily','hike']],
+    ['黑色棒球帽','hat','#2b2723','Nike',199,['春','夏','秋'],'运动或没洗头时救场',['sport','badminton']],
+    ['藏蓝针织毛线帽','hat','#2f4560','UNIQLO',129,['冬'],'冬天保暖，配大衣好看',['daily','hike']],
+    ['驼色针织开衫','outer','#c19a6b','UNIQLO',249,['春','秋'],'薄外套，办公室常备',['daily']],
+    ['专业跑步鞋','shoes','#2b2723','ASICS',699,['春','秋'],'支撑好，长距离舒服',['sport']],
+    ['速干运动短袖','top','#4a7ba7','Decathlon',99,['夏'],'排汗快，打球穿',['sport','badminton']],
+    ['轻量冲锋衣','outer','#2f4560','The North Face',1299,['春','秋'],'防风防雨，徒步必备',['hike']],
+    ['羽毛球拍包','accessory','#2b2723','YONEX',299,['春','夏','秋','冬'],'装球拍和球',['badminton']],
   ];
   const created = Date.now();
   demo.forEach((d,i)=>{
     items.unshift({
       id: uid(), created: created - i*1000,
       name:d[0], cat:d[1], color:d[2], brand:d[3]==='—'?'':d[3],
-      price:d[4], seasons:d[5], note:d[6], img:null,
+      price:d[4], seasons:d[5], note:d[6], scenes:d[7]||[], img:null,
       buyDate:'', wears:Math.floor(Math.random()*9), wearDates:[],
     });
   });
